@@ -254,9 +254,12 @@ def get_transcript(video_id):
             try:
                 transcript = transcript_list.find_manually_created_transcript([lang_code])
                 fetched_parts = transcript.fetch()
-                full_text = ' '.join([part['text'] for part in fetched_parts])
+                
+                # Direct access to the text attribute of transcript parts
+                full_text = ' '.join([part.text for part in fetched_parts])
                 logging.info(f"Successfully fetched manually created '{lang_code}' transcript for {video_id} (length: {len(full_text)}).")
                 return full_text
+                    
             except NoTranscriptFound:
                 logging.debug(f"No manually created '{lang_code}' transcript for {video_id}.")
             except Exception as e_manual:
@@ -266,9 +269,12 @@ def get_transcript(video_id):
             try:
                 transcript = transcript_list.find_generated_transcript([lang_code])
                 fetched_parts = transcript.fetch()
-                full_text = ' '.join([part['text'] for part in fetched_parts])
+                
+                # Direct access to the text attribute of transcript parts
+                full_text = ' '.join([part.text for part in fetched_parts])
                 logging.info(f"Successfully fetched auto-generated '{lang_code}' transcript for {video_id} (length: {len(full_text)}).")
                 return full_text
+                    
             except NoTranscriptFound:
                 logging.debug(f"No auto-generated '{lang_code}' transcript for {video_id}.")
             except Exception as e_generated:

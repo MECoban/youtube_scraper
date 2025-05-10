@@ -23,6 +23,7 @@ from modules.script_generator import generate_script_from_analysis
 from modules.title_suggester import suggest_titles
 from modules.chat_assistant import collect_brief, chat_assistant_generate_all, refine_script_and_titles_with_feedback
 from modules.fatih_coban import FatihCobanAnalyzer, format_fatih_style_brief
+import csv
 
 st.set_page_config(page_title="YouTube Strateji Analiz & AI Asistan", layout="wide")
 st.title("YouTube Strateji Analiz & AI Metin Asistanı")
@@ -513,6 +514,18 @@ with tab2:
                         # Add script and titles to chat message
                         ai_response += f"\n\n**Script:**\n```\n{st.session_state.current_chat_script}\n```\n\n**Başlıklar:**\n" + '\n'.join([f"- {t}" for t in st.session_state.current_chat_titles])
                         st.session_state.chat_step = "refining_script"
+                        
+                        # Save interaction for future improvements
+                        try:
+                            save_chat_feedback(
+                                brief=formatted_brief,
+                                titles=st.session_state.current_chat_titles,
+                                script=st.session_state.current_chat_script,
+                                feedback=prompt
+                            )
+                        except Exception as save_error:
+                            logging.error(f"Error saving feedback: {save_error}")
+                            # Continue without stopping the process
                     except Exception as e_gen:
                         logging.error(f"Error calling chat_assistant_generate_all: {e_gen}", exc_info=True)
                         st.session_state.current_chat_script = f"Script üretirken bir hata oluştu: {e_gen}"
@@ -543,6 +556,18 @@ with tab2:
                         ai_response += "\n✅ Script ve başlıklar güncellendi! Aşağıda güncellenmiş script ve başlıkları görebilirsiniz."
                         # Add script and titles to chat message
                         ai_response += f"\n\n**Script:**\n```\n{st.session_state.current_chat_script}\n```\n\n**Başlıklar:**\n" + '\n'.join([f"- {t}" for t in st.session_state.current_chat_titles])
+                        
+                        # Save interaction for future improvements
+                        try:
+                            save_chat_feedback(
+                                brief=formatted_brief,
+                                titles=st.session_state.current_chat_titles,
+                                script=st.session_state.current_chat_script,
+                                feedback=prompt
+                            )
+                        except Exception as save_error:
+                            logging.error(f"Error saving feedback: {save_error}")
+                            # Continue without stopping the process
                     except Exception as e:
                         logging.error(f"Refinement AI error: {e}", exc_info=True)
                         ai_response += f"\n❌ AI ile güncelleme sırasında hata oluştu: {e}"
@@ -552,6 +577,62 @@ with tab2:
                     st.session_state.chat_step = "awaiting_topic" # Reset
 
                 message_placeholder.markdown(ai_response)
+                
+                # Add title save and script copy buttons if we have content
+                if st.session_state.chat_step == "refining_script" and st.session_state.current_chat_titles and st.session_state.current_chat_script:
+                    with st.expander("Favori Başlık & Script Araçları", expanded=True):
+                        st.subheader("Favori Başlığınızı Seçin")
+                        selected_title_idx = st.radio(
+                            "Favori başlığınızı seçin:",
+                            options=range(len(st.session_state.current_chat_titles)),
+                            format_func=lambda i: st.session_state.current_chat_titles[i],
+                            key="favorite_title_radio"
+                        )
+                        
+                        # Save favorite title to CSV
+                        if st.button("Favori Başlığı Kaydet", key="save_fav_title_btn"):
+                            favorite_title = st.session_state.current_chat_titles[selected_title_idx]
+                            try:
+                                # Save user's favorite title to a CSV
+                                favorite_file = os.path.join("data", "favorite_titles.csv")
+                                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                favorite_data = {
+                                    "timestamp": timestamp,
+                                    "topic": st.session_state.brief_details.get("topic", ""),
+                                    "title": favorite_title,
+                                    "audience": st.session_state.brief_details.get("target_audience", "")
+                                }
+                                
+                                # Check if file exists
+                                file_exists = os.path.isfile(favorite_file)
+                                with open(favorite_file, "a", newline="", encoding="utf-8") as f:
+                                    writer = csv.DictWriter(f, fieldnames=favorite_data.keys())
+                                    if not file_exists:
+                                        writer.writeheader()
+                                    writer.writerow(favorite_data)
+                                
+                                st.success(f"Favori başlık kaydedildi! 🎯")
+                            except Exception as save_error:
+                                st.error(f"Başlık kaydedilirken hata oluştu: {save_error}")
+                        
+                        st.subheader("Script İşlemleri")
+                        # Create a copy button for script
+                        if st.button("Scripti Kopyala", key="copy_script_btn"):
+                            try:
+                                pyperclip.copy(st.session_state.current_chat_script)
+                                st.success("Script panoya kopyalandı! 📋")
+                            except Exception as copy_error:
+                                st.error(f"Script kopyalanırken hata oluştu: {copy_error}")
+                        
+                        # Create a download button for script
+                        script_bytes = st.session_state.current_chat_script.encode()
+                        st.download_button(
+                            label="Scripti İndir (TXT)",
+                            data=script_bytes,
+                            file_name=f"script_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                            mime="text/plain",
+                            key="download_script_btn"
+                        )
 
             except Exception as e:
                 full_response = f"Üzgünüm, bir hata oluştu: {e}"

@@ -312,16 +312,66 @@ def write_summary_to_sheet(sheet_name, summary_rows):
     worksheet.update(values=summary_rows, range_name='A1')
 
 def write_transcripts_to_sheet(sheet_name, transcript_rows):
+    """Write transcripts to Google Sheets, using summaries for long transcripts to avoid size limits."""
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     creds = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_CREDENTIAL_PATH or JSON_KEY_FILE, scope)
     client = gspread.authorize(creds)
     spreadsheet = client.open(sheet_name)
+    
+    # Max cell content size in Google Sheets is ~50K characters
+    MAX_CELL_SIZE = 40000  # Conservative limit
+    
+    # Process transcript rows to ensure they don't exceed size limits
+    processed_rows = []
+    for row in transcript_rows:
+        if len(row) >= 3:  # Expecting [video_id, title, transcript]
+            transcript = row[2]
+            # If transcript is too long, replace with summary
+            if transcript and isinstance(transcript, str) and len(transcript) > MAX_CELL_SIZE:
+                logging.info(f"Transcript for {row[0]} is too long ({len(transcript)} chars). Creating summary for Sheets.")
+                try:
+                    # Create a summary or truncate
+                    summary = get_summary_openai(transcript, max_tokens=400)
+                    if len(summary) > MAX_CELL_SIZE:  # If even the summary is too long
+                        summary = summary[:MAX_CELL_SIZE - 100] + "... [truncated for Google Sheets size limit]"
+                    row_copy = row.copy()
+                    row_copy[2] = f"[SUMMARY - FULL TRANSCRIPT TOO LONG]: {summary}"
+                    processed_rows.append(row_copy)
+                except Exception as e:
+                    logging.error(f"Error creating summary for transcript: {e}")
+                    # Fallback to truncation
+                    row_copy = row.copy()
+                    row_copy[2] = transcript[:MAX_CELL_SIZE - 100] + "... [truncated for Google Sheets size limit]"
+                    processed_rows.append(row_copy)
+            else:
+                processed_rows.append(row)
+        else:
+            processed_rows.append(row)  # Keep row as is if it doesn't match expected format
+    
     try:
-        worksheet = spreadsheet.worksheet('transcripts')
-        worksheet.clear()
-    except gspread.exceptions.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title='transcripts', rows="10000", cols="3")
-    worksheet.update(values=transcript_rows, range_name='A1')
+        # Add delay to avoid quota limits
+        time.sleep(2)
+        try:
+            worksheet = spreadsheet.worksheet('transcripts')
+            worksheet.clear()
+        except gspread.exceptions.WorksheetNotFound:
+            worksheet = spreadsheet.add_worksheet(title='transcripts', rows="10000", cols="3")
+        
+        # Write in batches to avoid quota issues
+        batch_size = 10
+        for i in range(0, len(processed_rows), batch_size):
+            batch = processed_rows[i:i+batch_size]
+            # Calculate the range (A1:C10 format)
+            range_name = f"A{i+1}:C{i+len(batch)}"
+            worksheet.update(values=batch, range_name=range_name)
+            time.sleep(1)  # Pause between batches to avoid quota issues
+            
+        logging.info(f"Successfully wrote {len(processed_rows)} transcript rows to Google Sheets.")
+    except Exception as e:
+        logging.error(f"Error writing transcripts to Google Sheets: {e}")
+        # Save to local CSV as fallback
+        save_to_csv(processed_rows, 'transcripts_backup.csv')
+        logging.info("Saved transcripts to local CSV file as fallback.")
 
 def save_to_csv(data, filename):
     os.makedirs('data', exist_ok=True)
@@ -345,11 +395,25 @@ def safe_json_loads(x):
 
 
 def get_summary_openai(text, max_tokens=800):
-    """Generate summary and strategic analysis using the updated OpenAI API call and the initialized client."""
+    """Generate summary and strategic analysis using OpenAI API with improved token handling and error management."""
     if not text or not isinstance(text, str) or len(text.strip()) < 50:
         logging.warning("Skipping summary generation for short or invalid text.")
         return "[Özet için yetersiz metin]"
+    
+    # Maximum input text to send to OpenAI (roughly 2-3K tokens)
+    MAX_INPUT_CHARS = 8000
+    
     try:
+        # Truncate input text if needed
+        truncated_text = text[:MAX_INPUT_CHARS] if len(text) > MAX_INPUT_CHARS else text
+        
+        # Add truncation notice if needed
+        if len(text) > MAX_INPUT_CHARS:
+            truncation_notice = f"\n\n[NOT: Transkript {len(text)} karakter uzunluğunda, token limitinden dolayı ilk {MAX_INPUT_CHARS} karakter kullanıldı.]"
+            logging.info(f"Truncating transcript from {len(text)} to {MAX_INPUT_CHARS} characters for OpenAI API call.")
+        else:
+            truncation_notice = ""
+        
         # Use the client initialized at the top of the file
         response = openai_client.chat.completions.create(
             model=os.getenv("OPENAI_MODEL", "gpt-4"),
@@ -378,7 +442,7 @@ Lütfen aşağıdaki YouTube video transkriptini analiz et:
 3. Bu stratejilerin içerik pazarlaması ve YouTube algoritması açısından etkisini yorumla.
 
 Transkript:
-{text[:4800]}
+{truncated_text}{truncation_notice}
                         """
                     )
                 }
@@ -389,6 +453,13 @@ Transkript:
         summary = response.choices[0].message.content.strip()
         logging.info("OpenAI strategic summary generated successfully via get_summary_openai.")
         return summary
+    except openai.RateLimitError as rate_error:
+        logging.error(f"OpenAI API rate limit exceeded: {rate_error}")
+        # Wait and retry logic could be implemented here
+        return f"[OpenAI API Kota Hatası: {rate_error}. Daha sonra tekrar deneyin.]"
+    except openai.APIError as api_error:
+        logging.error(f"OpenAI API error: {api_error}")
+        return f"[OpenAI API Hatası: {api_error}]"
     except Exception as e:
         logging.error(f"OpenAI summary generation error in get_summary_openai: {e}", exc_info=True)
         return f"[OpenAI Strateji Analizi Hatası: {e}]"
